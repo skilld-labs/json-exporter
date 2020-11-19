@@ -67,3 +67,10 @@ func LoadConfig(configPath string) (Config, error) {
 
 	return config, nil
 }
+
+func WriteFile(filename string, content []byte) error {
+	if err := ioutil.WriteFile(filename, content, 0644); err != nil {
+		return err
+	}
+	return nil
+}

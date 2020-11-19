@@ -14,11 +14,10 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
-	"os"
-
+	"fmt"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus-community/json_exporter/config"
@@ -29,12 +28,29 @@ import (
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
 	"gopkg.in/alecthomas/kingpin.v2"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"text/template"
+	"time"
 )
 
 var (
-	configFile    = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("config.yml").ExistingFile()
-	listenAddress = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
-	configCheck   = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
+	configFile     = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/config.yml").ExistingFile()
+	listenAddress  = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
+	configCheck    = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
+	LastScrapeTime = getTime()
+	t              = template.New("").Funcs(template.FuncMap{
+		"getTime":           getTime,
+		"getLastScrapeTime": getLastScrapeTime,
+	})
+	reloadCh chan chan error
+	sc       = &SafeConfig{
+		C: &config.Config{},
+	}
 )
 
 func Run() {
@@ -49,6 +65,8 @@ func Run() {
 
 	level.Info(logger).Log("msg", "Starting json_exporter", "version", version.Info()) //nolint:errcheck
 	level.Info(logger).Log("msg", "Build context", "build", version.BuildContext())    //nolint:errcheck
+
+	reloadCh = make(chan chan error)
 
 	level.Info(logger).Log("msg", "Loading config file", "file", *configFile) //nolint:errcheck
 	config, err := config.LoadConfig(*configFile)
@@ -66,23 +84,31 @@ func Run() {
 		os.Exit(0)
 	}
 
+	sc.SetConfig(&config)
+	reloadConfigOnChannel(logger, *configFile)
+	reloadConfigOnSignal(logger)
+
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/probe", func(w http.ResponseWriter, req *http.Request) {
-		probeHandler(w, req, logger, config)
+		probeHandler(w, req, logger)
 	})
+
+	http.HandleFunc("/config/reload", reloadConfigHandler(logger, *configFile, false))
+	http.HandleFunc("/config/update", reloadConfigHandler(logger, *configFile, true))
+
 	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
 		level.Error(logger).Log("msg", "Failed to start the server", "err", err) //nolint:errcheck
 	}
 }
 
-func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger, config config.Config) {
+func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	r = r.WithContext(ctx)
 
 	registry := prometheus.NewPedanticRegistry()
-
+	config := *sc.GetConfig()
 	metrics, err := exporter.CreateMetricsList(config)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to create metrics list from config", "err", err) //nolint:errcheck
@@ -92,10 +118,17 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger, con
 	jsonMetricCollector.Logger = logger
 
 	target := r.URL.Query().Get("target")
+	tmpl := template.Must(t.Parse(target))
+	buf := &bytes.Buffer{}
+	if err := tmpl.Execute(buf, ""); err != nil {
+		http.Error(w, "Target templating went wrong :"+err.Error(), http.StatusBadRequest)
+	}
+	target = buf.String()
 	if target == "" {
 		http.Error(w, "Target parameter is missing", http.StatusBadRequest)
 		return
 	}
+	LastScrapeTime = getTime()
 
 	data, err := exporter.FetchJson(ctx, logger, target, config)
 	if err != nil {
@@ -109,4 +142,104 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger, con
 	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	h.ServeHTTP(w, r)
 
+}
+
+func reloadConfigHandler(logger log.Logger, configFile string, updateFromBody bool) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "POST":
+			if updateFromBody {
+				body, err := ioutil.ReadAll(r.Body)
+				if err != nil {
+					level.Error(logger).Log("Error reading body:", err)
+					http.Error(w, "can't read body", http.StatusBadRequest)
+					return
+				}
+				if len(body) != 0 {
+					config.WriteFile(configFile, body)
+				}
+				r.Body.Close()
+				level.Info(logger).Log(configFile, "is rewriten")
+			}
+			if err := sendReloadChannel(); err != nil {
+				http.Error(w, fmt.Sprintf("failed to reload config: %s", err), http.StatusInternalServerError)
+			}
+
+		default:
+			http.Error(w, "POST method expected", 400)
+		}
+	}
+}
+
+func sendReloadChannel() error {
+	rc := make(chan error)
+	reloadCh <- rc
+	return <-rc
+}
+
+func reloadConfigOnSignal(logger log.Logger) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for {
+			select {
+			case <-hup:
+				if err := sendReloadChannel(); err != nil {
+					level.Error(logger).Log(err.Error())
+				}
+			}
+		}
+	}()
+}
+
+func reloadConfigOnChannel(logger log.Logger, configFile string) {
+	go func() {
+		for {
+			select {
+			case rc := <-reloadCh:
+				if err := sc.reloadConfig(configFile); err != nil {
+					level.Error(logger).Log("error reloading config:", err)
+					rc <- err
+				} else {
+					level.Info(logger).Log("config file was reloaded")
+					rc <- nil
+				}
+			}
+		}
+	}()
+}
+
+type SafeConfig struct {
+	sync.RWMutex
+	C *config.Config
+}
+
+func (sc *SafeConfig) GetConfig() *config.Config {
+	sc.RLock()
+	c := sc.C
+	sc.RUnlock()
+	return c
+}
+
+func (sc *SafeConfig) SetConfig(c *config.Config) {
+	sc.Lock()
+	sc.C = c
+	sc.Unlock()
+}
+
+func (sc *SafeConfig) reloadConfig(configFile string) error {
+	config, err := config.LoadConfig(configFile)
+	if err != nil {
+		return err
+	}
+	sc.SetConfig(&config)
+	return nil
+}
+
+func getTime() string {
+	return time.Now().Format(time.RFC3339)
+}
+
+func getLastScrapeTime() string {
+	return LastScrapeTime
 }
