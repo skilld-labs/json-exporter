@@ -14,20 +14,20 @@
 package config
 
 import (
-	"io/ioutil"
-
 	pconfig "github.com/prometheus/common/config"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
 )
 
 // Metric contains values that define a metric
 type Metric struct {
-	Name   string
-	Path   string
-	Labels map[string]string
-	Type   MetricType
-	Help   string
-	Values map[string]string
+	Name      string
+	Path      string
+	Labels    map[string]string
+	Type      MetricType
+	Extractor ExtractorType
+	Help      string
+	Values    map[string]string
 }
 
 type MetricType string
@@ -35,6 +35,13 @@ type MetricType string
 const (
 	ValueScrape  MetricType = "value" // default
 	ObjectScrape MetricType = "object"
+)
+
+type ExtractorType string
+
+const (
+	JsonPathExtractorValue ExtractorType = "jsonpath" //default
+	JqExtractorValue       ExtractorType = "jq"
 )
 
 // Config contains metrics and headers defining a configuration
@@ -66,4 +73,11 @@ func LoadConfig(configPath string) (Config, error) {
 	}
 
 	return config, nil
+}
+
+func WriteFile(filename string, content []byte) error {
+	if err := ioutil.WriteFile(filename, content, 0644); err != nil {
+		return err
+	}
+	return nil
 }
