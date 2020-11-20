@@ -14,7 +14,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,23 +31,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
-	"text/template"
 	"time"
 )
 
 var (
-	configFile     = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/config.yml").ExistingFile()
-	listenAddress  = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
-	configCheck    = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
-	LastScrapeTime = getTime()
-	t              = template.New("").Funcs(template.FuncMap{
-		"getTime":           getTime,
-		"getLastScrapeTime": getLastScrapeTime,
-	})
-	reloadCh chan chan error
-	sc       = &SafeConfig{
+	configFile    = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/config.yml").ExistingFile()
+	listenAddress = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
+	configCheck   = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
+	reloadCh      chan chan error
+	sc            = &SafeConfig{
 		C: &config.Config{},
 	}
 )
@@ -117,18 +113,12 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 	jsonMetricCollector := exporter.JsonMetricCollector{JsonMetrics: metrics}
 	jsonMetricCollector.Logger = logger
 
-	target := r.URL.Query().Get("target")
-	tmpl := template.Must(t.Parse(target))
-	buf := &bytes.Buffer{}
-	if err := tmpl.Execute(buf, ""); err != nil {
-		http.Error(w, "Target templating went wrong :"+err.Error(), http.StatusBadRequest)
-	}
-	target = buf.String()
+	target := parseTarget(r.URL.Query().Get("target"))
+
 	if target == "" {
 		http.Error(w, "Target parameter is missing", http.StatusBadRequest)
 		return
 	}
-	LastScrapeTime = getTime()
 
 	data, err := exporter.FetchJson(ctx, logger, target, config)
 	if err != nil {
@@ -142,6 +132,30 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 	h := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
 	h.ServeHTTP(w, r)
 
+}
+
+func parseTarget(unformatedTarget string) string {
+	target := unformatedTarget
+	re := regexp.MustCompile(`\$\{__(from|to)(?::)?(.*?)\}`)
+
+	for _, formatVar := range re.FindAllStringSubmatch(unformatedTarget, -1) {
+		switch formatVar[1] {
+		case "from":
+			if formatVar[2] != "" {
+				target = strings.Replace(target, formatVar[0], time.Now().Add(-time.Minute).Format(formatVar[2]), -1)
+			} else {
+				target = strings.Replace(target, formatVar[0], strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10), -1)
+			}
+		case "to":
+			if formatVar[2] != "" {
+				target = strings.Replace(target, formatVar[0], time.Now().Format(formatVar[2]), -1)
+			} else {
+				target = strings.Replace(target, formatVar[0], strconv.FormatInt(time.Now().Unix(), 10), -1)
+
+			}
+		}
+	}
+	return target
 }
 
 func reloadConfigHandler(logger log.Logger, configFile string, updateFromBody bool) func(w http.ResponseWriter, r *http.Request) {
@@ -234,12 +248,4 @@ func (sc *SafeConfig) reloadConfig(configFile string) error {
 	}
 	sc.SetConfig(&config)
 	return nil
-}
-
-func getTime() string {
-	return time.Now().Format(time.RFC3339)
-}
-
-func getLastScrapeTime() string {
-	return LastScrapeTime
 }
