@@ -14,7 +14,6 @@
 package exporter
 
 import (
-	"fmt"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus-community/json_exporter/extractor"
@@ -43,7 +42,6 @@ func (mc JsonMetricCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (mc JsonMetricCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, m := range mc.JsonMetrics {
-		fmt.Println(mc.Data)
 		if m.ValueExtractorPath == "" { // ScrapeType is 'value'
 			floatValue, err := m.Extractor.ExtractValue(mc.Logger, mc.Data, m.KeyExtractorPath)
 			if err != nil {

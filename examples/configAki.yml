@@ -4,7 +4,7 @@ metrics:
   type: object
   extractor: jq
   help: Get asset metrics
-  path: '. | group_by(.asset) | . as $o | [ keys[] | {"asset": ($o[.][0].asset|tostring), "kms": [$o[.][].period_km] | add, "status": $o[.]|last .status}]'
+  path: '$. | group_by(.asset) | . as $o | [ keys[] | {"asset": ($o[.][0].asset|tostring), "kms": [$o[.][].period_km] | add, "status": $o[.]|last .status}]'
   labels:
     asset: $.asset
     status: $.status

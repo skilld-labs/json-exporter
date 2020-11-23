@@ -17,6 +17,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"os/signal"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/prometheus-community/json_exporter/config"
@@ -28,16 +39,6 @@ import (
 	"github.com/prometheus/common/version"
 	"github.com/vigneshuvi/GoDateFormat"
 	"gopkg.in/alecthomas/kingpin.v2"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"os/signal"
-	"regexp"
-	"strconv"
-	"strings"
-	"sync"
-	"syscall"
-	"time"
 )
 
 var (
@@ -47,7 +48,8 @@ var (
 	scrapeTimestamps      = make(map[string]time.Time)
 	re                    = regexp.MustCompile(`\$\{__(from|to)(?::(date):?(.*?))?\}`)
 	scrapeDurationSeconds = time.Duration(0) // configuration
-	defaultFormat         = time.RFC3339
+	RFC3339               = "2006-01-02T15:04:05Z"
+	defaultFormat         = RFC3339
 	reloadCh              chan chan error
 	sc                    = &SafeConfig{
 		C: &config.Config{},
@@ -141,7 +143,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 
 func computeTarget(target string) string {
 	var newTarget = target
-	now := time.Now()
+	now := time.Now().In(time.UTC)
 
 	matches := re.FindAllStringSubmatch(target, -1)
 	for _, match := range matches {
@@ -155,7 +157,7 @@ func computeTarget(target string) string {
 			case "":
 				replace = replaceTime.Format(defaultFormat) // No args, set to default
 			case "iso":
-				replace = replaceTime.Format(time.RFC3339) // ISO 8601/RFC 3339
+				replace = replaceTime.Format(RFC3339) // ISO 8601/RFC 3339
 			case "seconds":
 				replace = strconv.FormatInt(replaceTime.Unix(), 10) // Unix seconds epoch
 			default:

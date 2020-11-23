@@ -3,11 +3,14 @@ package extractor
 import (
 	gojson "encoding/json"
 	"fmt"
+
 	"github.com/go-kit/kit/log"
+
 	//	"github.com/go-kit/kit/log/level"
-	"github.com/itchyny/gojq"
 	"math"
 	"strconv"
+
+	"github.com/itchyny/gojq"
 )
 
 type JqExtractor struct {
@@ -18,17 +21,11 @@ func (e *JqExtractor) ExtractValue(logger log.Logger, json []byte, path string) 
 	var floatValue = -1.0
 	var err error
 
-	if len(path) < 1 || path[0] != '$' {
-		// Static value
-		return e.parseValue([]byte(path))
-	}
-
-	// Dynamic value
 	var input interface{}
 	if err := gojson.Unmarshal(json, &input); err != nil {
 		return floatValue, err
 	}
-	v, err := e.extract(input, path[1:])
+	v, err := e.extract(input, path)
 	if err != nil {
 		return -1, err
 	}
@@ -44,9 +41,7 @@ func (e *JqExtractor) ExtractLabels(logger log.Logger, json []byte, paths []stri
 		return []string{}, err
 	}
 	for _, path := range paths {
-
-		// Dynamic value
-		vv, err := e.extract(input, path[1:])
+		vv, err := e.extract(input, path)
 		if err != nil {
 			return []string{}, err
 		}
@@ -75,7 +70,7 @@ func (e *JqExtractor) ExtractObject(logger log.Logger, json []byte, path string)
 	if err := gojson.Unmarshal(json, &input); err != nil {
 		return nil, err
 	}
-	v, err := e.extract(input, path[1:])
+	v, err := e.extract(input, path)
 	if err != nil {
 		return nil, err
 	}
@@ -104,6 +99,10 @@ func (e *JqExtractor) ExtractObject(logger log.Logger, json []byte, path string)
 }
 
 func (e *JqExtractor) extract(input interface{}, path string) (interface{}, error) {
+	if len(path) > 0 && path[0] != '$' {
+		return path, nil
+	}
+	path = path[1:]
 	query, err := gojq.Parse(path)
 	if err != nil {
 		return nil, err
@@ -129,7 +128,6 @@ func (e *JqExtractor) sanitizeValue(v interface{}) (float64, error) {
 		if errQuote == nil {
 			str = l
 		}
-		fmt.Println(str)
 		value, err = strconv.ParseFloat(str, 64)
 
 	case nil:
@@ -150,7 +148,6 @@ func (e *JqExtractor) sanitizeValue(v interface{}) (float64, error) {
 }
 
 func (e *JqExtractor) parseValue(bytes []byte) (float64, error) {
-	fmt.Println(string(bytes))
 	value, err := strconv.ParseFloat(string(bytes), 64)
 	if err != nil {
 		return -1.0, fmt.Errorf("failed to parse value as float; value: %q; err: %w", bytes, err)
