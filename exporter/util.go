@@ -19,15 +19,13 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	"github.com/kawamuray/jsonpath"
 	"github.com/prometheus-community/json_exporter/config"
+	"github.com/prometheus-community/json_exporter/extractor"
 	"github.com/prometheus/client_golang/prometheus"
 	pconfig "github.com/prometheus/common/config"
 )
@@ -36,45 +34,18 @@ func MakeMetricName(parts ...string) string {
 	return strings.Join(parts, "_")
 }
 
-func SanitizeValue(v *jsonpath.Result) (float64, error) {
-	var value float64
-	var boolValue bool
-	var err error
-	switch v.Type {
-	case jsonpath.JsonNumber:
-		value, err = parseValue(v.Value)
-	case jsonpath.JsonString:
-		// If it is a string, lets pull off the quotes and attempt to parse it as a number
-		value, err = parseValue(v.Value[1 : len(v.Value)-1])
-	case jsonpath.JsonNull:
-		value = math.NaN()
-	case jsonpath.JsonBool:
-		if boolValue, err = strconv.ParseBool(string(v.Value)); boolValue {
-			value = 1.0
-		} else {
-			value = 0.0
-		}
-	default:
-		value, err = parseValue(v.Value)
-	}
-	if err != nil {
-		// Should never happen.
-		return -1.0, err
-	}
-	return value, err
-}
-
-func parseValue(bytes []byte) (float64, error) {
-	value, err := strconv.ParseFloat(string(bytes), 64)
-	if err != nil {
-		return -1.0, fmt.Errorf("failed to parse value as float; value: %q; err: %w", bytes, err)
-	}
-	return value, nil
-}
-
 func CreateMetricsList(c config.Config) ([]JsonMetric, error) {
 	var metrics []JsonMetric
 	for _, metric := range c.Metrics {
+		var metricExtractor extractor.Extractor
+		switch metric.Extractor {
+		case "", config.JsonPathExtractorValue:
+			metricExtractor = &extractor.JsonPathExtractor{}
+		case config.JqExtractorValue:
+			metricExtractor = &extractor.JqExtractor{}
+		default:
+			return nil, fmt.Errorf("Unknown extractor type: '%s', for metric: '%s'", metric.Type, metric.Name)
+		}
 		switch metric.Type {
 		case config.ValueScrape:
 			constLabels := make(map[string]string)
@@ -95,8 +66,8 @@ func CreateMetricsList(c config.Config) ([]JsonMetric, error) {
 					variableLabels,
 					constLabels,
 				),
-				KeyJsonPath:     metric.Path,
-				LabelsJsonPaths: variableLabelsValues,
+				KeyExtractorPath:     metric.Path,
+				LabelsExtractorPaths: variableLabelsValues,
 			}
 			metrics = append(metrics, jsonMetric)
 		case config.ObjectScrape:
@@ -120,9 +91,10 @@ func CreateMetricsList(c config.Config) ([]JsonMetric, error) {
 						variableLabels,
 						constLabels,
 					),
-					KeyJsonPath:     metric.Path,
-					ValueJsonPath:   valuePath,
-					LabelsJsonPaths: variableLabelsValues,
+					Extractor:            metricExtractor,
+					KeyExtractorPath:     metric.Path,
+					ValueExtractorPath:   valuePath,
+					LabelsExtractorPaths: variableLabelsValues,
 				}
 				metrics = append(metrics, jsonMetric)
 			}

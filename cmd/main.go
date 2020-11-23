@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/common/promlog"
 	"github.com/prometheus/common/promlog/flag"
 	"github.com/prometheus/common/version"
+	"github.com/vigneshuvi/GoDateFormat"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"io/ioutil"
 	"net/http"
@@ -40,11 +41,15 @@ import (
 )
 
 var (
-	configFile    = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/config.yml").ExistingFile()
-	listenAddress = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
-	configCheck   = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
-	reloadCh      chan chan error
-	sc            = &SafeConfig{
+	configFile            = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/configAki.yml").ExistingFile()
+	listenAddress         = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
+	configCheck           = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
+	scrapeTimestamps      = make(map[string]time.Time)
+	re                    = regexp.MustCompile(`\$\{__(from|to)(?::(date):?(.*?))?\}`)
+	scrapeDurationSeconds = time.Duration(0) // configuration
+	defaultFormat         = time.RFC3339
+	reloadCh              chan chan error
+	sc                    = &SafeConfig{
 		C: &config.Config{},
 	}
 )
@@ -113,7 +118,7 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 	jsonMetricCollector := exporter.JsonMetricCollector{JsonMetrics: metrics}
 	jsonMetricCollector.Logger = logger
 
-	target := parseTarget(r.URL.Query().Get("target"))
+	target := computeTarget(r.URL.Query().Get("target"))
 
 	if target == "" {
 		http.Error(w, "Target parameter is missing", http.StatusBadRequest)
@@ -134,28 +139,47 @@ func probeHandler(w http.ResponseWriter, r *http.Request, logger log.Logger) {
 
 }
 
-func parseTarget(unformatedTarget string) string {
-	target := unformatedTarget
-	re := regexp.MustCompile(`\$\{__(from|to)(?::)?(.*?)\}`)
+func computeTarget(target string) string {
+	var newTarget = target
+	now := time.Now()
 
-	for _, formatVar := range re.FindAllStringSubmatch(unformatedTarget, -1) {
-		switch formatVar[1] {
-		case "from":
-			if formatVar[2] != "" {
-				target = strings.Replace(target, formatVar[0], time.Now().Add(-time.Minute).Format(formatVar[2]), -1)
-			} else {
-				target = strings.Replace(target, formatVar[0], strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10), -1)
-			}
-		case "to":
-			if formatVar[2] != "" {
-				target = strings.Replace(target, formatVar[0], time.Now().Format(formatVar[2]), -1)
-			} else {
-				target = strings.Replace(target, formatVar[0], strconv.FormatInt(time.Now().Unix(), 10), -1)
-
-			}
+	matches := re.FindAllStringSubmatch(target, -1)
+	for _, match := range matches {
+		var replaceTime = now
+		var replace string
+		if match[1] == "from" {
+			replaceTime = getLastScrapeTime(target, replaceTime)
 		}
+		if match[2] != "" {
+			switch format := match[3]; format {
+			case "":
+				replace = replaceTime.Format(defaultFormat) // No args, set to default
+			case "iso":
+				replace = replaceTime.Format(time.RFC3339) // ISO 8601/RFC 3339
+			case "seconds":
+				replace = strconv.FormatInt(replaceTime.Unix(), 10) // Unix seconds epoch
+			default:
+				replace = replaceTime.Format(GoDateFormat.ConvertFormat(format)) // Any custom date format
+			}
+		} else {
+			replace = strconv.FormatInt(replaceTime.Unix()*1e3, 10) //Unix millisecond epoch
+		}
+		newTarget = strings.Replace(newTarget, match[0], replace, -1)
 	}
-	return target
+	scrapeTimestamps[target] = now
+	return newTarget
+}
+
+func getLastScrapeTime(target string, now time.Time) time.Time {
+	lastScrapeTime, exists := scrapeTimestamps[target]
+	if !exists {
+		// handle first scrape
+		if scrapeDurationSeconds == 0 {
+			return time.Unix(0, 0)
+		}
+		return now.Add(-scrapeDurationSeconds * time.Second)
+	}
+	return lastScrapeTime
 }
 
 func reloadConfigHandler(logger log.Logger, configFile string, updateFromBody bool) func(w http.ResponseWriter, r *http.Request) {

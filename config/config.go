@@ -22,12 +22,13 @@ import (
 
 // Metric contains values that define a metric
 type Metric struct {
-	Name   string
-	Path   string
-	Labels map[string]string
-	Type   MetricType
-	Help   string
-	Values map[string]string
+	Name      string
+	Path      string
+	Labels    map[string]string
+	Type      MetricType
+	Extractor ExtractorType
+	Help      string
+	Values    map[string]string
 }
 
 type MetricType string
@@ -35,6 +36,13 @@ type MetricType string
 const (
 	ValueScrape  MetricType = "value" // default
 	ObjectScrape MetricType = "object"
+)
+
+type ExtractorType string
+
+const (
+	JsonPathExtractorValue ExtractorType = "jsonpath" //default
+	JqExtractorValue       ExtractorType = "jq"
 )
 
 // Config contains metrics and headers defining a configuration
