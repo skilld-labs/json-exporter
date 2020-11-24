@@ -39,11 +39,14 @@ import (
 	"github.com/prometheus/common/version"
 	"github.com/vigneshuvi/GoDateFormat"
 	"gopkg.in/alecthomas/kingpin.v2"
+	yaml "gopkg.in/yaml.v2"
 )
 
 var (
-	configFile            = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/configAki.yml").ExistingFile()
+	configFile            = kingpin.Flag("config.file", "JSON exporter configuration file.").Default("examples/config.yml").ExistingFile()
 	listenAddress         = kingpin.Flag("web.listen-address", "The address to listen on for HTTP requests.").Default(":7979").String()
+	authMode              = kingpin.Flag("auth.mode", "Authentification mode").Default("Basic").String()
+	authToken             = kingpin.Flag("auth.token", "Authentification token").Default(" ").String()
 	configCheck           = kingpin.Flag("config.check", "If true validate the config file and then exit.").Default("false").Bool()
 	scrapeTimestamps      = make(map[string]time.Time)
 	re                    = regexp.MustCompile(`\$\{__(from|to)(?::(date):?(.*?))?\}`)
@@ -72,11 +75,12 @@ func Run() {
 	reloadCh = make(chan chan error)
 
 	level.Info(logger).Log("msg", "Loading config file", "file", *configFile) //nolint:errcheck
-	config, err := config.LoadConfig(*configFile)
+	config, err := config.NewConfig(*authMode, *authToken, *configFile)
 	if err != nil {
 		level.Error(logger).Log("msg", "Error loading config", "err", err) //nolint:errcheck
 		os.Exit(1)
 	}
+
 	configJson, err := json.Marshal(config)
 	if err != nil {
 		level.Error(logger).Log("msg", "Failed to marshal config to JSON", "err", err) //nolint:errcheck
@@ -87,7 +91,7 @@ func Run() {
 		os.Exit(0)
 	}
 
-	sc.SetConfig(&config)
+	sc.SetConfig(config)
 	reloadConfigOnChannel(logger, *configFile)
 	reloadConfigOnSignal(logger)
 
@@ -95,12 +99,24 @@ func Run() {
 	http.HandleFunc("/probe", func(w http.ResponseWriter, req *http.Request) {
 		probeHandler(w, req, logger)
 	})
-
+	http.HandleFunc("/config", configHandler(logger, sc))
 	http.HandleFunc("/config/reload", reloadConfigHandler(logger, *configFile, false))
 	http.HandleFunc("/config/update", reloadConfigHandler(logger, *configFile, true))
 
 	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
 		level.Error(logger).Log("msg", "Failed to start the server", "err", err) //nolint:errcheck
+	}
+}
+
+func configHandler(logger log.Logger, sc *SafeConfig) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		c, err := yaml.Marshal(sc.GetMetricsConfig())
+		if err != nil {
+			level.Error(logger).Log("error marshaling configuration:", err)
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		w.Write(c)
 	}
 }
 
@@ -241,7 +257,7 @@ func reloadConfigOnChannel(logger log.Logger, configFile string) {
 					level.Error(logger).Log("error reloading config:", err)
 					rc <- err
 				} else {
-					level.Info(logger).Log("config file was reloaded")
+					level.Info(logger).Log("config file was reloaded:", configFile)
 					rc <- nil
 				}
 			}
@@ -261,6 +277,13 @@ func (sc *SafeConfig) GetConfig() *config.Config {
 	return c
 }
 
+func (sc *SafeConfig) GetMetricsConfig() *[]config.Metric {
+	sc.RLock()
+	c := sc.C.Metrics
+	sc.RUnlock()
+	return &c
+}
+
 func (sc *SafeConfig) SetConfig(c *config.Config) {
 	sc.Lock()
 	sc.C = c
@@ -268,10 +291,10 @@ func (sc *SafeConfig) SetConfig(c *config.Config) {
 }
 
 func (sc *SafeConfig) reloadConfig(configFile string) error {
-	config, err := config.LoadConfig(configFile)
-	if err != nil {
+	c := sc.GetConfig()
+	if err := c.LoadMetricsConfig(configFile); err != nil {
 		return err
 	}
-	sc.SetConfig(&config)
+	sc.SetConfig(c)
 	return nil
 }

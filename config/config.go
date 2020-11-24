@@ -14,10 +14,10 @@
 package config
 
 import (
-	"io/ioutil"
-
 	pconfig "github.com/prometheus/common/config"
 	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"strings"
 )
 
 // Metric contains values that define a metric
@@ -52,28 +52,43 @@ type Config struct {
 	HTTPClientConfig pconfig.HTTPClientConfig `yaml:"http_client_config,omitempty"`
 }
 
-func LoadConfig(configPath string) (Config, error) {
-	var config Config
-	data, err := ioutil.ReadFile(configPath)
+func NewConfig(authMode, authToken, configPath string) (*Config, error) {
+	c := &Config{
+		Headers: map[string]string{
+			authMode: authToken,
+		},
+	}
+
+	if err := c.LoadMetricsConfig(configPath); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Config) LoadMetricsConfig(filename string) error {
+	content, err := ioutil.ReadFile(filename)
 	if err != nil {
-		return config, err
-	}
-
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return config, err
-	}
-
-	// Complete Defaults
-	for i := 0; i < len(config.Metrics); i++ {
-		if config.Metrics[i].Type == "" {
-			config.Metrics[i].Type = ValueScrape
+		if strings.Contains(err.Error(), "no such file or directory") {
+			return nil
 		}
-		if config.Metrics[i].Help == "" {
-			config.Metrics[i].Help = config.Metrics[i].Name
+		return err
+	}
+
+	if err = yaml.Unmarshal(content, &c.Metrics); err != nil {
+		return err
+	}
+
+	//Adding metrics' default
+	for i := 0; i < len(c.Metrics); i++ {
+		if c.Metrics[i].Type == "" {
+			c.Metrics[i].Type = ValueScrape
+		}
+		if c.Metrics[i].Help == "" {
+			c.Metrics[i].Help = c.Metrics[i].Name
 		}
 	}
 
-	return config, nil
+	return nil
 }
 
 func WriteFile(filename string, content []byte) error {
