@@ -16,7 +16,7 @@ package exporter
 import (
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	"github.com/prometheus-community/json_exporter/extractor"
+	"github.com/skilld-labs/json_exporter/extractor"
 	"github.com/prometheus/client_golang/prometheus"
 )
 

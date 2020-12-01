@@ -14,7 +14,7 @@
 package main
 
 import (
-	"github.com/prometheus-community/json_exporter/cmd"
+	"github.com/skilld-labs/json_exporter/cmd"
 )
 
 func main() {

@@ -30,8 +30,8 @@ import (
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
-	"github.com/prometheus-community/json_exporter/config"
-	"github.com/prometheus-community/json_exporter/exporter"
+	"github.com/skilld-labs/json_exporter/config"
+	"github.com/skilld-labs/json_exporter/exporter"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/promlog"

@@ -1,4 +1,4 @@
-module github.com/prometheus-community/json_exporter
+module github.com/skilld-labs/json_exporter
 
 go 1.14
 

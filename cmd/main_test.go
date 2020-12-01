@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/go-kit/kit/log"
-	"github.com/prometheus-community/json_exporter/config"
+	"github.com/skilld-labs/json_exporter/config"
 	pconfig "github.com/prometheus/common/config"
 )
 

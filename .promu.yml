@@ -2,7 +2,7 @@ go:
     # This must match .circle/config.yml.
     version: 1.15
 repository:
-    path: github.com/prometheus-community/json_exporter
+    path: github.com/skilld-labs/json_exporter
 build:
     binaries:
         - name: json_exporter
